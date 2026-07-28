@@ -5,11 +5,44 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from app.training import (
+    METRICS_PATH,
+    MODEL_ARTIFACT_PATH,
+    PREDICTION_FEATURE_ORDER,
+    load_training_artifacts,
+    predict_subscription,
+)
+
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 TRAIN_DATA_PATH = DATA_DIR / "train.csv"
 TEST_DATA_PATH = DATA_DIR / "test.csv"
 MONTH_ORDER = ["mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 TARGET_LABELS = {"yes": "认购", "no": "未认购"}
+PREDICTION_TARGET_LABELS = {"yes": "预测会认购", "no": "预测不会认购"}
+NUMERIC_PREDICTION_FIELDS = {
+    "age": "年龄",
+    "duration": "通话时长",
+    "campaign": "本次营销联系次数",
+    "pdays": "距上次联系的天数",
+    "previous": "历史联系次数",
+    "emp_var_rate": "就业变化率",
+    "cons_price_index": "消费者价格指数",
+    "cons_conf_index": "消费者信心指数",
+    "lending_rate3m": "3个月贷款利率",
+    "nr_employed": "就业人数指标",
+}
+CATEGORICAL_PREDICTION_FIELDS = {
+    "job": "职业",
+    "marital": "婚姻状态",
+    "education": "教育程度",
+    "default": "是否违约",
+    "housing": "是否有房贷",
+    "loan": "是否有个人贷款",
+    "contact": "联系方式",
+    "month": "联系月份",
+    "day_of_week": "联系星期",
+    "poutcome": "上次营销结果",
+}
 
 
 def load_dataset(path: str | Path) -> pd.DataFrame:
@@ -126,6 +159,66 @@ def build_numeric_summary(df: pd.DataFrame) -> pd.DataFrame:
     return summary
 
 
+def read_training_summary() -> dict[str, object] | None:
+    if not MODEL_ARTIFACT_PATH.exists() or not METRICS_PATH.exists():
+        return None
+    return load_training_artifacts()
+
+
+def build_prediction_input_options(train_df: pd.DataFrame) -> dict[str, dict[str, object]]:
+    options: dict[str, dict[str, object]] = {}
+    for field in PREDICTION_FEATURE_ORDER:
+        if field in NUMERIC_PREDICTION_FIELDS:
+            series = train_df[field]
+            options[field] = {
+                "label": NUMERIC_PREDICTION_FIELDS[field],
+                "type": "numeric",
+                "min": float(series.min()),
+                "max": float(series.max()),
+                "value": float(round(series.median(), 2)),
+                "step": 1.0 if pd.api.types.is_integer_dtype(series) else 0.01,
+            }
+        else:
+            options[field] = {
+                "label": CATEGORICAL_PREDICTION_FIELDS[field],
+                "type": "categorical",
+                "options": get_filter_options(train_df, field),
+            }
+    return options
+
+
+def collect_prediction_inputs(train_df: pd.DataFrame) -> dict[str, object]:
+    options = build_prediction_input_options(train_df)
+    inputs: dict[str, object] = {}
+
+    st.subheader("在线预测")
+    st.caption("通过点选输入客户特征，调用离线训练模型预测该客户是否会认购。")
+
+    for field in PREDICTION_FEATURE_ORDER:
+        config = options[field]
+        if config["type"] == "numeric":
+            if config["step"] == 1.0:
+                inputs[field] = st.number_input(
+                    config["label"],
+                    min_value=int(config["min"]),
+                    max_value=int(config["max"]),
+                    value=int(config["value"]),
+                    step=1,
+                )
+            else:
+                inputs[field] = st.number_input(
+                    config["label"],
+                    min_value=float(config["min"]),
+                    max_value=float(config["max"]),
+                    value=float(config["value"]),
+                    step=float(config["step"]),
+                    format="%.2f",
+                )
+        else:
+            inputs[field] = st.selectbox(config["label"], options=config["options"])
+    return inputs
+
+
 def render_analysis_page(train_df: pd.DataFrame) -> None:
     st.subheader("交互式数据分析")
     st.caption("通过筛选条件观察不同客户群体的认购情况与营销特征。")
@@ -192,6 +285,69 @@ def render_analysis_page(train_df: pd.DataFrame) -> None:
     st.dataframe(filtered_df.head(30), use_container_width=True)
 
 
+def render_training_status() -> None:
+    st.subheader("离线训练状态")
+
+    training_summary = read_training_summary()
+    if training_summary is None:
+        st.info("当前还没有训练产物。请先运行 `python -m app.training` 生成模型和指标文件。")
+        return
+
+    metrics = training_summary["metrics"]
+    metadata = training_summary["metadata"]
+
+    metric_columns = st.columns(4)
+    metric_columns[0].metric("Accuracy", f"{metrics['accuracy']:.3f}")
+    metric_columns[1].metric("Precision", f"{metrics['precision']:.3f}")
+    metric_columns[2].metric("Recall", f"{metrics['recall']:.3f}")
+    metric_columns[3].metric("F1", f"{metrics['f1']:.3f}")
+
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "字段": ["模型类型", "训练样本数", "验证样本数", "特征数", "模型文件"],
+                "值": [
+                    metadata["model_type"],
+                    metadata["train_size"],
+                    metadata["validation_size"],
+                    metadata["feature_count"],
+                    str(MODEL_ARTIFACT_PATH),
+                ],
+            }
+        ),
+        use_container_width=True,
+    )
+
+
+def render_prediction_page(train_df: pd.DataFrame) -> None:
+    training_summary = read_training_summary()
+    if training_summary is None:
+        st.warning("当前没有可用模型，无法进行在线预测。请先运行 `python -m app.training`。")
+        return
+
+    prediction_inputs = collect_prediction_inputs(train_df)
+    if not st.button("开始预测"):
+        return
+
+    try:
+        prediction_result = predict_subscription(prediction_inputs)
+    except Exception as exc:
+        st.error(f"预测失败: {exc}")
+        return
+
+    st.success(PREDICTION_TARGET_LABELS[prediction_result["label"]])
+    st.metric("认购概率", f"{prediction_result['probability'] * 100:.2f}%")
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "输入字段": list(prediction_inputs.keys()),
+                "输入值": list(prediction_inputs.values()),
+            }
+        ),
+        use_container_width=True,
+    )
+
+
 def main() -> None:
     st.set_page_config(page_title="banksys", layout="wide")
     st.title("banksys")
@@ -213,6 +369,8 @@ def main() -> None:
     col3.metric("训练集字段数", train_df.shape[1])
 
     render_analysis_page(train_df)
+    render_training_status()
+    render_prediction_page(train_df)
 
 
 if __name__ == "__main__":
