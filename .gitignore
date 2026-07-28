@@ -7,3 +7,5 @@ htmlcov/
 .venv/
 .env
 .DS_Store
+models/*.joblib
+models/*.json
