@@ -32,6 +32,13 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+          {
+            echo "Host *"
+            echo "  ServerAliveInterval 30"
+            echo "  ServerAliveCountMax 10"
+            echo "  TCPKeepAlive yes"
+          } >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
 
       - name: Sync project files
         env:
@@ -55,7 +62,7 @@ jobs:
           ssh "$SSH_USER@$SSH_HOST" <<'EOF'
           set -e
           cd /opt/banksys
-          docker build -t banksys:latest .
+          docker build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple -t banksys:latest .
           docker rm -f banksys 2>/dev/null || true
           docker run -d --name banksys --restart unless-stopped -p 8004:8004 banksys:latest
           sleep 5
