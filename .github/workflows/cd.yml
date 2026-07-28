@@ -22,7 +22,42 @@ jobs:
           test -n "$SSH_USER"
           test -n "$SSH_PRIVATE_KEY"
 
-      - name: Placeholder deploy
+      - name: Configure SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
-          echo "CD baseline is configured."
-          echo "Next step: replace this placeholder with SSH deploy to /opt/banksys and validate port 8004."
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Sync project files
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          tar \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.coverage' \
+            --exclude='__pycache__' \
+            --exclude='.pytest_cache' \
+            --exclude='.ruff_cache' \
+            -czf - . | ssh "$SSH_USER@$SSH_HOST" 'mkdir -p /opt/banksys && tar -xzf - -C /opt/banksys'
+
+      - name: Deploy application
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh "$SSH_USER@$SSH_HOST" <<'EOF'
+          set -e
+          cd /opt/banksys
+          docker build -t banksys:latest .
+          docker rm -f banksys 2>/dev/null || true
+          docker run -d --name banksys --restart unless-stopped -p 8004:8004 banksys:latest
+          sleep 5
+          curl -fsS http://localhost:8004/
+          EOF
