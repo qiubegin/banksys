@@ -5,13 +5,22 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from app.training import (
-    METRICS_PATH,
-    MODEL_ARTIFACT_PATH,
-    PREDICTION_FEATURE_ORDER,
-    load_training_artifacts,
-    predict_subscription,
-)
+try:
+    from app.training import (
+        METRICS_PATH,
+        MODEL_ARTIFACT_PATH,
+        PREDICTION_FEATURE_ORDER,
+        load_training_artifacts,
+        predict_subscription,
+    )
+except ModuleNotFoundError:
+    from training import (
+        METRICS_PATH,
+        MODEL_ARTIFACT_PATH,
+        PREDICTION_FEATURE_ORDER,
+        load_training_artifacts,
+        predict_subscription,
+    )
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 TRAIN_DATA_PATH = DATA_DIR / "train.csv"
